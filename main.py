@@ -9,7 +9,7 @@ from linebot.v3.messaging import (
     AsyncMessagingApi, ReplyMessageRequest,
     TextMessage, ImageMessage
 )
-from linebot.v3.exceptions import LineBotApiError
+from linebot.exceptions import LineBotApiError  
 # ─── 你的子模組 ──────────────────────────────────────────
 from food_classifier import classify_and_lookup
 from chat import generate_nutrition_advice
