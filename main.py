@@ -1,115 +1,106 @@
-# main.py
-
-import os
-import tempfile
+import os, tempfile, asyncio, json
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
+load_dotenv()                              # 讀取 .env
 
-from linebot.v3.webhook import WebhookParser, WebhookHandler
+# ─── LINE v3 SDK ─────────────────────────────────────────
+from linebot.v3.webhook import WebhookParser
 from linebot.v3.messaging import (
-    AsyncMessagingApi,
-    ReplyMessageRequest,
-    TextMessage,
-    ImageMessage
+    AsyncMessagingApi, ReplyMessageRequest,
+    TextMessage, ImageMessage
 )
-
+from linebot.v3.exceptions import LineBotApiError
+# ─── 你的子模組 ──────────────────────────────────────────
 from food_classifier import classify_and_lookup
-from chat import generate_reply, generate_nutrition_advice
+from chat import generate_nutrition_advice
 
-# ➡️ 載入 .env，讓下面的 os.getenv(...) 能夠拿到所有金鑰
-load_dotenv(dotenv_path=".env")
-
+# ─── 初始化 ──────────────────────────────────────────────
 app = FastAPI()
-parser   = WebhookParser(os.getenv("LINE_CHANNEL_SECRET"))
-handler  = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
-line_api = AsyncMessagingApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 
+CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
+CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+parser   = WebhookParser(CHANNEL_SECRET)
+line_bot = AsyncMessagingApi(CHANNEL_TOKEN)
+
+# ─── Health check (Render) ──────────────────────────────
+@app.get("/healthz")
+async def healthz():
+    return {"status": "ok"}
+
+# ─── Webhook 入口 ───────────────────────────────────────
 @app.post("/callback")
 async def callback(request: Request):
     body      = await request.body()
-    signature = request.headers.get("X-Line-Signature")
+    print("[RAW] ", body[:120], flush=True)
+    signature = request.headers.get("X-Line-Signature", "")
     try:
         events = parser.parse(body.decode(), signature)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    for event in events:
-        # 如果是圖片
-        if isinstance(event.message, ImageMessage):
-            await handle_image(event)
-        # 如果是文字
-        elif isinstance(event.message, TextMessage):
-            await handle_text(event)
+    # Debug：印事件，看得到就代表 LINE → Render 正常
+    print(f"[Debug] 事件數：{len(events)}", flush=True)
+
+    # 並行處理所有事件
+    await asyncio.gather(*[dispatch(event) for event in events])
     return "OK"
 
-async def handle_text(event):
-    """
-    處理使用者傳文字訊息：直接丟給 GPT-4o-mini 當陪聊，回覆結果
-    """
-    text = event.message.text.strip()
-    reply = generate_reply(text)
-    await safe_reply(event.reply_token, reply)
+# ─── 依事件類型呼叫處理函式 ──────────────────────────────
+async def dispatch(event):
+    try:
+        if event.message.type == "text":
+            await handle_text(event)
+        elif event.message.type == "image":
+            await handle_image(event)
+    except LineBotApiError as e:
+        print("[LineBotApiError]", e, flush=True)
+    except Exception as e:
+        print("[Unhandled Exception]", e, flush=True)
 
+# ─── 文字訊息 ────────────────────────────────────────────
+async def handle_text(event):
+    query = event.message.text.strip()
+    info  = await classify_and_lookup(text=query)  # 文字直接查
+    if info:
+        reply = format_nutrition(info)
+    else:
+        reply = generate_nutrition_advice(query, None, None, None, None)
+    await reply_text(event.reply_token, reply)
+
+# ─── 圖片訊息 ────────────────────────────────────────────
 async def handle_image(event):
-    """
-    處理使用者傳圖片：
-      1. 下載圖片到本地臨時檔 (tmp_path)
-      2. classify_and_lookup(tmp_path) → 拿 {name, calories, protein, fat, carbs}
-      3. 呼叫 generate_nutrition_advice(...) → 取得建議文字
-      4. 組「食物名稱＋數值＋建議」回覆給使用者
-    """
-    # 1️⃣ 下載圖片
+    # 1. 下載圖片到暫存檔
     msg_id  = event.message.id
-    content = await line_api.get_message_content(msg_id)
+    content = await line_bot.get_message_content(msg_id)
     with tempfile.NamedTemporaryFile(delete=False) as fp:
-        async for chunk in content.iter_content():
+        for chunk in content.iter_content():
             fp.write(chunk)
         tmp_path = fp.name
 
-    # 2️⃣ 圖片分類 + 營養查詢
-    result = await classify_and_lookup(tmp_path)
-    if result:
-        # 3️⃣ 拆出四項數值
-        food_name = result["name"]
-        calories  = result["calories"]
-        protein   = result["protein"]
-        fat       = result["fat"]
-        carbs     = result["carbs"]
-
-        # 4️⃣ 呼叫 GPT 生成營養建議
-        advice_text = generate_nutrition_advice(
-            food_name, calories, protein, fat, carbs
-        )
-
-        # 5️⃣ 組成最終回覆
-        reply = (
-            f"辨識到：「{food_name}」\n"
-            f"卡路里：{calories} kcal\n"
-            f"蛋白質：{protein} g\n"
-            f"脂肪：{fat} g\n"
-            f"碳水：{carbs} g\n"
-            f"建議：{advice_text}"
-        )
+    # 2. 辨識 + 查營養
+    info = await classify_and_lookup(img_path=tmp_path)
+    if info:
+        reply = format_nutrition(info)
     else:
-        reply = "抱歉，無法辨識或查詢這張圖片的營養資料，請改用文字輸入或提供更清晰的照片。"
+        reply = "抱歉，這張圖片我暫時看不太出來是什麼食物 QQ"
 
-    # 安全地回覆給使用者
-    await safe_reply(event.reply_token, reply)
+    await reply_text(event.reply_token, reply)
 
-async def safe_reply(token: str, message: str):
-    """
-    用 try/except 包裹 LINE 回覆，避免失敗時程式炸掉
-    """
-    try:
-        await line_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=token,
-                messages=[TextMessage(text=message)]
-            )
+# ─── 共用小工具 ──────────────────────────────────────────
+def format_nutrition(info: dict) -> str:
+    return (
+        f"{info['name']} (預估)\n"
+        f"熱量 {info['calories']} kcal\n"
+        f"蛋白質 {info['protein']} g；脂肪 {info['fat']} g；碳水 {info['carbs']} g\n"
+        + generate_nutrition_advice(
+            info['name'], info['calories'],
+            info['protein'], info['fat'], info['carbs'])
+    )
+
+async def reply_text(token, text):
+    await line_bot.reply_message(
+        ReplyMessageRequest(
+            reply_token=token,
+            messages=[TextMessage(text=text)]
         )
-    except Exception as e:
-        print("【Debug】LINE 回覆錯誤：", repr(e))
-
-@app.get("/healthz")
-def health_check():
-    return {"status": "ok"}
+    )
