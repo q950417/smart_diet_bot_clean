@@ -13,7 +13,10 @@ from linebot.v3.messaging import (
 
 # ─── 子模組 ───────────────────────────────────────────────
 from food_classifier import classify_and_lookup
-from chat import generate_nutrition_advice
+from chat import (
+    generate_nutrition_advice,
+    generate_chat_reply
+)
 
 # ─── 初始化 ───────────────────────────────────────────────
 app = FastAPI()
@@ -58,10 +61,12 @@ async def dispatch(event):
 async def handle_text(event):
     query = event.message.text.strip()
     info  = await classify_and_lookup(text=query)
+
     if info:
         reply = format_nutrition(info)
     else:
-        reply = generate_nutrition_advice(query, None, None, None, None)
+        reply = generate_chat_reply(query)     # ← 改成陪聊
+
     await reply_text(event.reply_token, reply)
 
 # ─── 圖片訊息 ────────────────────────────────────────────
