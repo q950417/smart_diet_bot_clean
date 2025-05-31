@@ -1,4 +1,4 @@
-import os, tempfile, asyncio
+import os, asyncio
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 
@@ -7,20 +7,19 @@ load_dotenv()
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 
-# ─── LINE v3  SDK 初始化 ────────────────────────────────
+# ─── LINE v3 SDK 初始化（完全不 import 例外類別） ─────────
 from linebot.v3.webhook   import WebhookParser
 from linebot.v3.messaging import (
     Configuration, AsyncApiClient, AsyncMessagingApi,
     ReplyMessageRequest, TextMessage
 )
-from linebot.v3.exceptions import ApiException   # ← 換成這個
 
-config     = Configuration(access_token=CHANNEL_TOKEN)
-api_client = AsyncApiClient(configuration=config)
-line_bot   = AsyncMessagingApi(api_client=api_client)
-parser     = WebhookParser(CHANNEL_SECRET)
+cfg         = Configuration(access_token=CHANNEL_TOKEN)
+api_client  = AsyncApiClient(configuration=cfg)
+line_bot    = AsyncMessagingApi(api_client=api_client)
+parser      = WebhookParser(CHANNEL_SECRET)
 
-# ─── 你的自訂模組 ───────────────────────────────────────
+# ─── 你的子模組 ──────────────────────────────────────────
 from food_classifier import classify_and_lookup
 from chat            import generate_nutrition_advice, chat_reply
 
@@ -49,40 +48,24 @@ async def dispatch(event):
     try:
         if event.message.type == "text":
             await handle_text(event)
-        elif event.message.type == "image":
-            await handle_image(event)
-    except ApiException as e:          # ← 這裡也改
-        print("[ApiException]", e, flush=True)
-    except Exception as e:
+        else:
+            await reply_text(event.reply_token, "目前只支援文字訊息，圖片之後再來！")
+    except Exception as e:          # ← 不分 SDK 版本，直接抓
         print("[Unhandled]", e, flush=True)
 
 # === 文字訊息 =================================================
 async def handle_text(event):
     text = event.message.text.strip()
 
-    # 1) 嘗試當作食物查營養
-    info = await classify_and_lookup(text=text)
+    info = await classify_and_lookup(text=text)   # 試著查營養
     if info:
         reply = fmt_nutrition(info)
     else:
-        # 2) 不是食物就陪聊
-        reply = await chat_reply(text)
-
-    await reply_text(event.reply_token, reply)
-
-# === 圖片訊息 =================================================
-async def handle_image(event):
-    # 1) 下載圖片
-    msg_id  = event.message.id
-    content = await line_bot.get_message_content(msg_id)
-    with tempfile.NamedTemporaryFile(delete=False) as fp:
-        for chunk in content.iter_content():
-            fp.write(chunk)
-        tmp_path = fp.name
-
-    # 2) 辨識 + 查營養
-    info = await classify_and_lookup(img_path=tmp_path)
-    reply = fmt_nutrition(info) if info else "暫時看不出這是什麼食物 QQ"
+        try:
+            reply = await chat_reply(text)        # GPT 陪聊
+        except Exception as e:
+            print("[OpenAIError]", e, flush=True)
+            reply = "目前額度不足，稍後再試～"
 
     await reply_text(event.reply_token, reply)
 
@@ -103,6 +86,6 @@ async def reply_text(token, text):
     await line_bot.reply_message(
         ReplyMessageRequest(
             reply_token=token,
-            messages=[TextMessage(text=text)]
+            messages=[TextMessage(text=text[:1000])]   # LINE 最長 1000 chars
         )
     )
