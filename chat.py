@@ -1,63 +1,75 @@
-# ─── chat.py ─────────────────────────────────────────────
+# === chat.py  =========================================================
 """
-只要呼叫
-    generate_chat_reply("嗨")
-    generate_nutrition_advice(name, kcal, protein, fat, carb)
-就會回傳一段文字。
-遇到額度不足 / 429 等錯誤，會回 fallback 字串。
+集中處理：
+1. OpenAI GPT 陪聊 (async chat_reply)
+2. 根據營養數值產生飲食建議 (generate_nutrition_advice)
+-----------------------------------------------------------------------
+openai-python 已升到 1.x；用 AsyncOpenAI() 新介面。
 """
-import os, openai
+
+import os
 from dotenv import load_dotenv
+from openai import AsyncOpenAI, OpenAIError
 
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY", "")
+_OPENAI_KEY = os.getenv("OPENAI_API_KEY", "")
 
-# 想改預設回覆，直接改這兩行
-FALLBACK_CHAT = "抱歉，聊天功能暫時休息中，下次再跟我說話吧！"
-FALLBACK_DIET = "抱歉，暫時無法生成飲食建議～"
+# ---------- OpenAI 非同步用戶端 ----------
+client = AsyncOpenAI(api_key=_OPENAI_KEY) if _OPENAI_KEY else None
 
-MODEL_ID = "gpt-3.5-turbo"          # 免費額度帳號建議用 3.5
+_SYSTEM_PROMPT = (
+    "你是一個溫暖的飲食小幫手，回答時先簡短回應使用者，"
+    "再補一句貼心的飲食提醒。"
+)
 
-# -------- 主要對外函式 ---------------------------------
-def generate_chat_reply(query: str) -> str:
-    """一般聊天"""
+# ------------------------------------------------------------------ #
+#  async chat_reply : str -> str
+# ------------------------------------------------------------------ #
+async def chat_reply(user_msg: str) -> str:
+    """
+    ❶ 有金鑰 → 呼叫 GPT ❷ 沒金鑰 / 失敗 → 回預設訊息
+    """
+    if not client:
+        return "抱歉，尚未設定 OpenAI API 金鑰，無法回覆～"
+
     try:
-        return _sync_chat(
-            system="你是一個友善的飲食小幫手，回答保持 30 字內。",
-            user=query,
+        rsp = await client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user",   "content": user_msg},
+            ],
+            timeout=10,          # 秒
         )
+        return rsp.choices[0].message.content.strip()
+
+    # OpenAI 相關錯誤 → 印 log，回預設句
+    except OpenAIError as e:
+        print("[OpenAIError]", e, flush=True)
     except Exception as e:
-        print("[Debug] chat_reply 失敗:", e, flush=True)
-        return FALLBACK_CHAT
+        print("[chat_reply-unexpected]", e, flush=True)
 
+    return "抱歉，暫時無法回覆，請稍後再試～"
 
-def generate_nutrition_advice(name, kcal, protein, fat, carb) -> str:
-    """帶營養數值，請 GPT 給一句建議；任何值傳 None 代表缺資料"""
-    try:
-        prompt = (
-            f"以下是 {name or '這道食物'} 的營養資料："
-            f"熱量 {kcal} kcal，蛋白質 {protein} g，脂肪 {fat} g，碳水 {carb} g。\n"
-            "用繁體中文給出一句 40 字以內的健康飲食建議，不要重複數字。"
-        )
-        return _sync_chat(
-            system="你是專業營養師，回答簡短有同理心。",
-            user=prompt,
-        )
-    except Exception as e:
-        print("[Debug] nutrition_advice 失敗:", e, flush=True)
-        return FALLBACK_DIET
+# ------------------------------------------------------------------ #
+#  generate_nutrition_advice : (name, kcal, pro, fat, carb) -> str
+# ------------------------------------------------------------------ #
+def generate_nutrition_advice(
+    food_name: str,
+    calories: float | None,
+    protein:  float | None,
+    fat:      float | None,
+    carbs:    float | None,
+) -> str:
+    """
+    有完整營養數值就回個人化建議；缺任何一項就回泛用提醒。
+    """
+    if None in (calories, protein, fat, carbs):
+        return "記得均衡飲食、多蔬果、足量蛋白質並保持水分喔！"
 
-
-# -------- 內部小工具 -----------------------------------
-def _sync_chat(system: str, user: str) -> str:
-    """使用 OpenAI Python v1.x 同步介面；不需要 asyncio.run()"""
-    resp = openai.chat.completions.create(
-        model=MODEL_ID,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user},
-        ],
-        max_tokens=120,
-        temperature=0.8,
+    return (
+        f"吃了 {food_name} 後，今日建議熱量控制在 ~{calories+300:.0f} kcal 內，"
+        f"並把蛋白質拉到 {protein+15:.1f} g 以上；"
+        f"接下來少油少糖、多蔬菜與適量運動，就能維持身體輕盈唷！"
     )
-    return resp.choices[0].message.content.strip()
+# ====================================================================
