@@ -6,13 +6,14 @@ load_dotenv()
 # ── LINE v3 SDK ──────────────────────────────────────────
 from linebot.webhook import WebhookParser
 from linebot.exceptions import LineBotApiError
-
 from linebot.v3.messaging import (
-    AsyncMessagingApi, ReplyMessageRequest,
-    TextMessage, ImageMessage
+    Configuration,
+    AsyncApiClient,           # ← 正確路徑
+    AsyncMessagingApi,        # ← 非同步 API
+    ReplyMessageRequest,
+    TextMessage,
+    ImageMessage,
 )
-from linebot.v3.messaging.configuration import Configuration
-from linebot.v3.messaging.api_client import AsyncApiClient
 
 # ── 子模組 ───────────────────────────────────────────────
 from food_classifier import classify_and_lookup
@@ -27,9 +28,9 @@ CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 
 parser = WebhookParser(CHANNEL_SECRET)
 
-config = Configuration(access_token=CHANNEL_TOKEN)
-async_cli = AsyncApiClient(configuration=config)
-line_bot  = AsyncMessagingApi(async_cli)
+conf        = Configuration(access_token=CHANNEL_TOKEN)
+api_client  = AsyncApiClient(conf)          # ★ 修正
+line_bot    = AsyncMessagingApi(api_client)
 
 # ── FastAPI 物件 ─────────────────────────────────────────
 app = FastAPI()
@@ -44,9 +45,9 @@ async def callback(request: Request):
     body = await request.body()
     print("[RAW]", body[:120], flush=True)
 
-    signature = request.headers.get("X-Line-Signature", "")
+    sig = request.headers.get("X-Line-Signature", "")
     try:
-        events = parser.parse(body.decode(), signature)
+        events = parser.parse(body.decode(), sig)
         print("[Debug] 事件數 =", len(events), flush=True)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -74,7 +75,7 @@ async def handle_text(event):
     if info:
         reply = format_nutrition(info)
     else:
-        reply = generate_chat_reply(query)          # 陪聊
+        reply = generate_chat_reply(query)
     await reply_text(event.reply_token, reply)
 
 # ── 圖片訊息 ────────────────────────────────────────────
@@ -86,11 +87,11 @@ async def handle_image(event):
             fp.write(chunk)
         tmp_path = fp.name
 
-    info = await classify_and_lookup(img_path=tmp_path)
+    info  = await classify_and_lookup(img_path=tmp_path)
     reply = format_nutrition(info) if info else "抱歉，看不出這是什麼食物 QQ"
     await reply_text(event.reply_token, reply)
 
-# ── 小工具 ──────────────────────────────────────────────
+# ── 共用小工具 ──────────────────────────────────────────
 def format_nutrition(info: dict) -> str:
     return (
         f"{info.get('name','?')} (預估)\n"
