@@ -20,9 +20,11 @@ from chat            import generate_nutrition_advice, chat_reply
 # ---------- FastAPI ----------
 app = FastAPI()
 
-parser   = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
-line_bot = MessagingApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
-
+from linebot.v3.messaging import Configuration, AsyncApiClient, AsyncMessagingApi
+config     = Configuration(access_token=gYaFNOzCKB9LYLHnFAmm99qQ+rhOoi1DXwNCPXXkcCctVxXTerEV60IW+YGEZaU4yGLMgBq9kdkiQC79JHVK+0+nJOBCg+nN3oy9hOeK29Oodm8e08sWIDT3Nkvzf0aPZFUW9gQMKkCl5CL84G98aAdB04t89/1O/w1cDnyilFU=)
+api_client = AsyncApiClient(configuration=config)
+line_bot   = AsyncMessagingApi(api_client=api_client)
+parser     = WebhookParser(fa8db57a4250c19a34612b0a4d25ceb3)
 # -------- health check ---------
 @app.get("/healthz")
 async def healthz():
