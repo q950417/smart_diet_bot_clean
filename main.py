@@ -1,47 +1,37 @@
-import os, tempfile, asyncio, json
+import os, tempfile, asyncio
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 
-# -------------------------------------------------------
-# 讀 .env
-# -------------------------------------------------------
-load_dotenv()                        # .env 放在專案根目錄
+# ─── 讀 .env ─────────────────────────────────────────────
+load_dotenv()
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 
-# -------------------------------------------------------
-#  LINE v3  SDK 初始化
-# -------------------------------------------------------
+# ─── LINE v3  SDK 初始化 ────────────────────────────────
 from linebot.v3.webhook   import WebhookParser
 from linebot.v3.messaging import (
     Configuration, AsyncApiClient, AsyncMessagingApi,
     ReplyMessageRequest, TextMessage
 )
-from linebot.v3.exceptions import LineBotApiError
+from linebot.v3.exceptions import ApiException   # ← 換成這個
 
-config     = Configuration(access_token=CHANNEL_TOKEN)  # ← 這裡就能用
+config     = Configuration(access_token=CHANNEL_TOKEN)
 api_client = AsyncApiClient(configuration=config)
 line_bot   = AsyncMessagingApi(api_client=api_client)
 parser     = WebhookParser(CHANNEL_SECRET)
 
-# -------------------------------------------------------
-#  你自己的模組
-# -------------------------------------------------------
+# ─── 你的自訂模組 ───────────────────────────────────────
 from food_classifier import classify_and_lookup
 from chat            import generate_nutrition_advice, chat_reply
 
-# -------------------------------------------------------
-#  FastAPI APP
-# -------------------------------------------------------
+# ─── FastAPI APP ────────────────────────────────────────
 app = FastAPI()
 
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
 
-# -------------------------------------------------------
-#  Webhook 入口
-# -------------------------------------------------------
+# ─── Webhook 入口 ───────────────────────────────────────
 @app.post("/callback")
 async def callback(request: Request):
     body      = await request.body()
@@ -54,17 +44,15 @@ async def callback(request: Request):
     await asyncio.gather(*[dispatch(e) for e in events])
     return "OK"
 
-# -------------------------------------------------------
-#  事件分派
-# -------------------------------------------------------
+# ─── 事件分派 ───────────────────────────────────────────
 async def dispatch(event):
     try:
         if event.message.type == "text":
             await handle_text(event)
         elif event.message.type == "image":
             await handle_image(event)
-    except LineBotApiError as e:
-        print("[LineBotApiError]", e, flush=True)
+    except ApiException as e:          # ← 這裡也改
+        print("[ApiException]", e, flush=True)
     except Exception as e:
         print("[Unhandled]", e, flush=True)
 
@@ -72,19 +60,19 @@ async def dispatch(event):
 async def handle_text(event):
     text = event.message.text.strip()
 
-    # 先當作食物名稱查
+    # 1) 嘗試當作食物查營養
     info = await classify_and_lookup(text=text)
     if info:
         reply = fmt_nutrition(info)
     else:
-        # 如果不是食物，就丟到 GPT 陪聊
+        # 2) 不是食物就陪聊
         reply = await chat_reply(text)
 
     await reply_text(event.reply_token, reply)
 
 # === 圖片訊息 =================================================
 async def handle_image(event):
-    # 1) 下載圖片到暫存檔
+    # 1) 下載圖片
     msg_id  = event.message.id
     content = await line_bot.get_message_content(msg_id)
     with tempfile.NamedTemporaryFile(delete=False) as fp:
@@ -98,7 +86,7 @@ async def handle_image(event):
 
     await reply_text(event.reply_token, reply)
 
-# === 共用小工具 ===============================================
+# === 共用工具 =================================================
 def fmt_nutrition(info: dict) -> str:
     return (
         f"{info['name']} (預估)\n"
