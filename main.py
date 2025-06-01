@@ -1,40 +1,41 @@
-# main.py
-import os, tempfile, asyncio, json, httpx
+# main.py  ── 完整檔案覆蓋版
+import os, tempfile, asyncio, textwrap
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv
 
-load_dotenv()  # 讀 .env
+load_dotenv()                                  # 讀取 .env
 
-# ── LINE v3 SDK ────────────────────────────
-from linebot.v3.messaging import (
+# ── LINE v3 SDK ───────────────────────────────────────────
+from linebot.v3.messaging             import (
     Configuration, AsyncApiClient, AsyncMessagingApi,
     ReplyMessageRequest, TextMessage
 )
-from linebot.v3.webhook import WebhookParser
-from linebot.v3.exceptions import ApiException  # v3 唯一例外
+from linebot.v3.messaging.exceptions  import ApiException   # ← 正確位置
+from linebot.v3.webhook               import WebhookParser
 
-# ── 你的副程式 ───────────────────────────────
+# ── 自己的副程式 ──────────────────────────────────────────
 from food_classifier import classify_and_lookup
 from chat            import try_greet, format_nutrition
 
-# ── 初始化 LINE client ───────────────────────
+# ── 初始化 LINE client ────────────────────────────────────
 CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "")
 CHANNEL_TOKEN  = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
 
-config     = Configuration(access_token=CHANNEL_TOKEN)
-api_client = AsyncApiClient(configuration=config)
-line_bot   = AsyncMessagingApi(api_client)
-parser     = WebhookParser(CHANNEL_SECRET)
+config      = Configuration(access_token=CHANNEL_TOKEN)
+api_client  = AsyncApiClient(configuration=config)
+line_bot    = AsyncMessagingApi(api_client)
+parser      = WebhookParser(CHANNEL_SECRET)
 
-# ── FastAPI app ─────────────────────────────
+# ── FastAPI ------------------------------------------------
 app = FastAPI()
+
 
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
 
 
-# ────────────────────────────────────────────
+# ── Webhook ------------------------------------------------
 @app.post("/callback")
 async def callback(request: Request):
     raw_body  = await request.body()
@@ -45,34 +46,34 @@ async def callback(request: Request):
     except Exception as e:
         raise HTTPException(400, str(e))
 
-    # 並行處理
-    await asyncio.gather(*[handle_event(e) for e in events])
+    await asyncio.gather(*[handle_event(ev) for ev in events])
     return "OK"
 
 
+# ── 事件分派 ----------------------------------------------
 async def handle_event(event):
     try:
         if event.message.type == "text":
             await handle_text(event)
         elif event.message.type == "image":
             await handle_image(event)
-    except ApiException as e:
+    except ApiException as e:           # LINE API 例外
         print("[Line error]", e.status, e.message)
-    except Exception as e:
+    except Exception as e:              # 其他未預期例外
         print("[Unhandled]", e)
 
 
-# ── 文字訊息 ────────────────────────────────
+# ── 文字訊息 ----------------------------------------------
 async def handle_text(event):
     msg = event.message.text.strip()
 
-    # 1) 招呼語
+    # (1) 招呼語固定回覆
     greet = try_greet(msg)
     if greet:
         await reply_text(event.reply_token, greet)
         return
 
-    # 2) 當作「食物名稱」查營養
+    # (2) 視為食物名稱 → 查營養
     info = await classify_and_lookup(text=msg)
     if info:
         await reply_text(event.reply_token, format_nutrition(info))
@@ -80,16 +81,16 @@ async def handle_text(event):
         await reply_text(event.reply_token, "抱歉找不到這道食物的營養資訊～")
 
 
-# ── 圖片訊息 ────────────────────────────────
+# ── 圖片訊息 ----------------------------------------------
 async def handle_image(event):
-    # 1 下載到暫存檔
+    # 下載影像到暫存
     content = await line_bot.get_message_content(event.message.id)
     with tempfile.NamedTemporaryFile(delete=False) as fp:
         for chunk in content.iter_content():
             fp.write(chunk)
         img_path = fp.name
 
-    # 2 影像分類 + 查營養
+    # 影像分類 + 查營養
     info = await classify_and_lookup(img_path=img_path)
     if info:
         await reply_text(event.reply_token, format_nutrition(info))
@@ -97,7 +98,7 @@ async def handle_image(event):
         await reply_text(event.reply_token, "這張照片我暫時認不出是什麼食物 QQ")
 
 
-# ── 共用小函式 ───────────────────────────────
+# ── 共用：傳送文字 ----------------------------------------
 async def reply_text(token: str, text: str):
     await line_bot.reply_message(
         ReplyMessageRequest(
