@@ -1,48 +1,25 @@
-import os, httpx
-from dotenv import load_dotenv
-load_dotenv()
+"""
+簡化版：
+  • img_path → 用你先前的模型辨識（如不需要可省）
+  • text     → 直接拿來對 nutrition_db 查
+只要回傳 nutrition_db.lookup 的結果 dict 或 None
+"""
+import asyncio
 
-SPOON_KEY = os.getenv("SPOONACULAR_API_KEY")
+from nutrition_db import lookup_food
 
-async def classify_and_lookup(img_path: str = None, text: str = None):
-    if not SPOON_KEY:
+# 若仍想用圖辨識，可留原本 classify_image()
+async def classify_and_lookup(
+    img_path: str | None = None,
+    text: str | None = None
+):
+    if text:                              # 文字直接查
+        return lookup_food(text)
+
+    if img_path:                          # 圖片就丟模型 → name
+        from PIL import Image
+        # 這裡簡單回傳 None，避免佔空間
+        # TODO: 放回你自己的 classify_image(img_path)
         return None
 
-    async with httpx.AsyncClient(timeout=30) as cli:
-        if img_path:
-            files = {"file": open(img_path, "rb")}
-            params = {"apiKey": SPOON_KEY}
-            resp   = await cli.post(
-                "https://api.spoonacular.com/food/images/classify",
-                files=files, params=params)
-            data = resp.json()
-            food_name = data.get("category")
-            print("[Debug] 圖片分類 →", food_name, flush=True)
-        else:
-            food_name = text
-            print("[Debug] 直接查文字 →", food_name, flush=True)
-
-        if not food_name:
-            return None
-
-        # 估算營養
-        nutr = (await cli.get(
-            "https://api.spoonacular.com/recipes/guessNutrition",
-            params={"title": food_name, "apiKey": SPOON_KEY})
-        ).json()
-
-        if nutr.get("status") == "failure":
-            return None
-
-        # 必要欄位不齊 → 視為 None
-        for key in ("calories", "protein", "fat", "carbs"):
-            if key not in nutr:
-                return None
-
-        return {
-            "name":     food_name,
-            "calories": nutr["calories"]["value"],
-            "protein":  nutr["protein"]["value"],
-            "fat":      nutr["fat"]["value"],
-            "carbs":    nutr["carbs"]["value"],
-        }
+    return None
