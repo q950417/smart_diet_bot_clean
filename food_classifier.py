@@ -1,25 +1,37 @@
-"""
-簡化版：
-  • img_path → 用你先前的模型辨識（如不需要可省）
-  • text     → 直接拿來對 nutrition_db 查
-只要回傳 nutrition_db.lookup 的結果 dict 或 None
-"""
-import asyncio
+import torch, os, asyncio, tempfile
+from transformers import AutoProcessor, ViTForImageClassification
+from nutrition_db import lookup_food, fetch_nutrition
 
-from nutrition_db import lookup_food
+# ---------- 模型 ------------------------------------------------------
+MODEL = "nateraw/food101-vit-base-patch16-224"
+device = "cpu"
 
-# 若仍想用圖辨識，可留原本 classify_image()
-async def classify_and_lookup(
-    img_path: str | None = None,
-    text: str | None = None
-):
-    if text:                              # 文字直接查
-        return lookup_food(text)
+processor = AutoProcessor.from_pretrained(MODEL)
+model     = ViTForImageClassification.from_pretrained(MODEL).to(device).eval()
 
-    if img_path:                          # 圖片就丟模型 → name
-        from PIL import Image
-        # 這裡簡單回傳 None，避免佔空間
-        # TODO: 放回你自己的 classify_image(img_path)
-        return None
+# ---------- 圖片 → class name ----------------------------------------
+@torch.inference_mode()
+def _classify_image(path: str):
+    from PIL import Image
+    img = Image.open(path).convert("RGB")
+    inputs = processor(images=img, return_tensors="pt").to(device)
+    logits = model(**inputs).logits[0]
+    idx = logits.argmax().item()
+    prob = torch.softmax(logits, dim=0)[idx].item()
+    return model.config.id2label[idx], prob
 
-    return None
+# ---------- 封裝：圖片或文字 → 營養 dict -------------------------------
+async def classify_and_lookup(img_path: str = None, text: str = None):
+    if text:                                   # ── 純文字（直接查）
+        info = lookup_food(text)
+        if info:
+            return info
+        return await fetch_nutrition(text)
+
+    if img_path:                               # ── 圖片
+        name, p = _classify_image(img_path)
+        print(f"[Debug] classify = {name}, prob={p:.3f}", flush=True)
+        info = lookup_food(name)
+        if info:
+            return info
+        return await fetch_nutrition(name)
