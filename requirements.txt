@@ -1,11 +1,8 @@
-fastapi>=0.95.0
-uvicorn[standard]>=0.22.0
-python-dotenv>=1.0.0
-httpx>=0.24.0
-pillow>=11.0.0
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-dotenv==1.1.0
+httpx==0.28.1
+pillow==11.2.1          # 只給 Spoonacular 圖片分析上傳用
 line-bot-sdk==3.9.0
-typing-extensions>=4.0.0
-pandas>=2.2.0
-torch==2.2.2
-transformers>=4.40.0
-safetensors>=0.5.1 
+pandas==2.2.3
+numpy<2                 # 避開 torch 產生的 NumPy 2 衝突

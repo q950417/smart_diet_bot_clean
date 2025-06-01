@@ -1,34 +1,20 @@
 # chat.py
-import textwrap
-
-# ── 1. 關鍵字聊天 ───────────────────────────
-_GREETINGS = {"哈囉", "hello", "hi", "你好", "嗨"}
-
-def try_greet(msg: str) -> str | None:
-    """若 msg 為招呼語，回固定內容，否則回 None"""
-    if msg.lower().strip() in _GREETINGS:
-        return "嗨～今天想吃什麼呢？"
+def try_greet(text: str) -> str | None:
+    if text.lower() in {"hi", "hello", "哈囉", "你好"}:
+        return "嗨！想知道食物的營養嗎？傳文字或照片給我吧！"
     return None
 
+def advice_by_calories(kcal: int) -> str:
+    if kcal < 200:
+        return "熱量很低，可以放心享用～"
+    if kcal < 400:
+        return "熱量中等，記得均衡飲食。"
+    return "熱量偏高，建議搭配蔬菜或分次食用！"
 
-# ── 2. 依熱量給建議（純 if-else） ─────────────
-def advice_by_calories(kcal: float) -> str:
-    if kcal < 150:
-        return "熱量不高，可以放心享用喔！"
-    if kcal < 300:
-        return "普通份量，記得均衡搭配蛋白質～"
-    if kcal < 600:
-        return "熱量稍高，建議搭配大量蔬菜或減少主食。"
-    return "熱量偏高，建議分次食用或與朋友分享！"
-
-
-# ── 3. 將營養 dict 轉成回覆文字 ──────────────
 def format_nutrition(info: dict) -> str:
-    txt = textwrap.dedent(f"""\
-        {info['name']}（預估）
-        熱量 {info['calories']} kcal
-        蛋白質 {info['protein']} g　脂肪 {info['fat']} g　碳水 {info['carbs']} g
-
-        {advice_by_calories(info['calories'])}
-    """).strip()
-    return txt
+    return (
+        f"{info['name']} 估算營養：\n"
+        f"熱量 {info['calories']} kcal\n"
+        f"蛋白質 {info['protein']} g | 脂肪 {info['fat']} g | 碳水 {info['carbs']} g\n"
+        f"{advice_by_calories(info['calories'])}"
+    )
