@@ -1,92 +1,112 @@
-# food_classifier.py
-"""
-文字 → 先查本地 CSV；沒有就 hit Spoonacular guessNutrition
-圖片 → Spoonacular /food/images/analyze
-回傳統一的 dict：name / calories / protein / fat / carbs
-"""
+# food_classifier.py -----------------------------------------------
+# 依文字或圖片，回傳 {"name", "calories", "protein", "fat", "carbs"} 或 None
 
-import pathlib, os, pandas as pd, httpx, asyncio, tempfile
+import os, pathlib, mimetypes
+import pandas as pd, httpx, backoff, tempfile
 
+KEY  = os.getenv("SPOONACULAR_KEY", "")          # .env 內要放 SPOONACULAR_KEY
 BASE = "https://api.spoonacular.com"
-KEY  = os.getenv("SPOONACULAR_KEY", "")          # ⚠️ 你必須在 Render ENV 加這個
+CSV  = pathlib.Path(__file__).with_name("foods.csv")
 
-# ---------- 本地 CSV ----------------------------------------------------------
-CSV = pathlib.Path(__file__).with_name("foods.csv")
-_df = pd.read_csv(CSV) if CSV.exists() else pd.DataFrame()
+# 確保 CSV 至少有表頭
+if not CSV.exists():
+    CSV.write_text("name,calories,protein,fat,carbs\n", encoding="utf-8")
 
-def _lookup_local(name: str):
-    if {"calories", "protein", "fat", "carbs"} <= set(_df.columns):
-        row = _df.loc[_df["name"].str.lower() == name.lower()]
-        if not row.empty:
-            r = row.iloc[0]
-            return dict(name=r["name"],
-                        calories=int(r["calories"]),
-                        protein=int(r["protein"]),
-                        fat=int(r["fat"]),
-                        carbs=int(r["carbs"]))
-    return None
+_df = pd.read_csv(CSV)          # 快取在記憶體，方便查詢
 
-# ---------- 通用 HTTP ---------------------------------------------------------
-async def _get_json(url: str, **params):
-    params |= {"apiKey": KEY}
-    async with httpx.AsyncClient(timeout=15) as c:
+
+# ------------------- 工具 -------------------------
+
+@backoff.on_exception(backoff.expo,
+                      (httpx.HTTPStatusError, httpx.ReadTimeout),
+                      max_tries=3)
+async def _get(url: str, **params):
+    params["apiKey"] = KEY
+    async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, params=params)
     r.raise_for_status()
     return r.json()
 
-# ---------- 文字營養 ----------------------------------------------------------
-async def _guess_nutrition(name: str):
-    try:
-        j = await _get_json(f"{BASE}/recipes/guessNutrition", title=name)
-        return dict(
-            name      = name,
-            calories  = int(j["calories"]["value"]),
-            protein   = int(j["protein"]["value"]),
-            fat       = int(j["fat"]["value"]),
-            carbs     = int(j["carbs"]["value"]),
-        )
-    except Exception:
+async def _guess_nutrition(name: str) -> dict | None:
+    j = await _get(f"{BASE}/recipes/guessNutrition", title=name)
+    if not j:
+        return None
+    return {
+        "name": name,
+        "calories": int(j["calories"]["value"]),
+        "protein" : int(j["protein"]["value"]),
+        "fat"     : int(j["fat"]["value"]),
+        "carbs"   : int(j["carbs"]["value"]),
+    }
+
+async def _guess_image_nutrition(path: str) -> dict | None:
+    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+    files  = {"file": (path, open(path, "rb"), mime)}
+    params = {"apiKey": KEY}
+
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(f"{BASE}/food/images/analyze", params=params, files=files)
+    r.raise_for_status()
+    j = r.json()
+
+    # 若信心度過低就當作「無法辨識」
+    conf = j.get("category", {}).get("confidence") or 1.0
+    if conf < 0.30:
         return None
 
-# ---------- 圖片營養 ----------------------------------------------------------
-async def _guess_image_nutrition(img_path: str):
-    try:
-        params = {"apiKey": KEY}
-        with open(img_path, "rb") as f:
-            files = {"file": ("img.jpg", f, "image/jpeg")}
-            async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(f"{BASE}/food/images/analyze",
-                                 params=params, files=files)
-        r.raise_for_status()
-        j = r.json()
+    name = j["category"]["name"]
+    nuts = {n["name"].lower(): n["amount"] for n in
+            j.get("nutrition", {}).get("nutrients", [])}
 
-        # nutrients list → dict
-        nut = {n["name"]: n["amount"] for n in j["nutrition"]["nutrients"]}
-        name = j.get("category", {}).get("name") or "Unknown"
+    return {
+        "name": name,
+        "calories": int(nuts.get("calories", 0)),
+        "protein" : int(nuts.get("protein", 0)),
+        "fat"     : int(nuts.get("fat", 0)),
+        "carbs"   : int(nuts.get("carbohydrates", 0)),
+    }
 
-        return dict(
-            name     = name,
-            calories = int(nut.get("Calories",   0)),
-            protein  = int(nut.get("Protein",    0)),
-            fat      = int(nut.get("Fat",        0)),
-            carbs    = int(nut.get("Carbohydrates", 0)),
-        )
-    except Exception:
-        return None
 
-# ---------- 外部介面 ----------------------------------------------------------
-async def classify_and_lookup(text: str | None = None,
-                              img_path: str | None = None):
+# ------------------- CSV 快取 ---------------------
+
+def _lookup_local(name: str) -> dict | None:
+    global _df
+    m = _df["name"].str.lower() == name.lower()
+    if m.any():
+        return _df.loc[m].iloc[0].to_dict()
+    return None
+
+def _cache(info: dict):
+    global _df
+    if (_df["name"].str.lower() == info["name"].lower()).any():
+        return
+    _df.loc[len(_df)] = info
+    _df.to_csv(CSV, index=False)
+
+
+# ------------------- 對外函式 ----------------------
+
+async def classify_and_lookup(*,
+                              text: str | None = None,
+                              img_path: str | None = None) -> dict | None:
     if text:
         if (info := _lookup_local(text)):
             return info
-        return await _guess_nutrition(text)
+        info = await _guess_nutrition(text)
 
-    if img_path:
-        return await _guess_image_nutrition(img_path)
+    elif img_path:
+        info = await _guess_image_nutrition(img_path)
+        # 若圖片辨識出了名稱，再嘗試 CSV / API 精修
+        if info and info["name"]:
+            info = _lookup_local(info["name"]) or info
 
-    return None
+    else:
+        info = None
 
+    if info:
+        _cache(info)
+
+    return info
 
 #======================================
 # # food_classifier.py

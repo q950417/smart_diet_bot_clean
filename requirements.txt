@@ -9,8 +9,8 @@
 fastapi>=0.95.0
 uvicorn[standard]>=0.22.0
 python-dotenv>=1.0.0
-httpx>=0.28.0
+httpx>=0.24.0
 pillow>=11.0.0
-line-bot-sdk==3.9.0           # v3 SDK
+line-bot-sdk==3.9.0        # v3 SDK
 pandas==2.2.3
-numpy<2.0                     # 避免舊 pandas binary 相容問題
+backoff>=2.2.1             # 自動重試／退避

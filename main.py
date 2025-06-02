@@ -1,3 +1,4 @@
+# main.py -----------------------------------------------------------
 import os, asyncio, tempfile, httpx
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv; load_dotenv()
@@ -10,30 +11,38 @@ from linebot.v3.messaging.exceptions import ApiException
 from linebot.v3.webhook import WebhookParser
 
 from food_classifier import classify_and_lookup
-from chat import try_greet, format_nutrition
+from chat            import try_reply, format_nutrition
 
-# ─── LINE init ───────────────────────────────────────────
+
+# ---------- LINE 初始化 -----------------------
 parser = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
 conf   = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
-api    = AsyncMessagingApi(AsyncApiClient(configuration=conf))
+line_bot = AsyncMessagingApi(AsyncApiClient(configuration=conf))
 
 app = FastAPI()
 
-@app.get("/healthz")
-async def healthz(): return {"ok": True}
 
+# ---------- 健康檢查 (Render) -------------------
+@app.get("/healthz")
+async def healthz():          # GET /healthz -> 200 OK
+    return {"ok": True}
+
+
+# ---------- Webhook 入口 -----------------------
 @app.post("/callback")
 async def callback(request: Request):
     body = await request.body()
-    signature = request.headers.get("X-Line-Signature", "")
+    sig  = request.headers.get("X-Line-Signature", "")
     try:
-        events = parser.parse(body.decode(), signature)
+        events = parser.parse(body.decode(), sig)
     except Exception as e:
         raise HTTPException(400, str(e))
+
     await asyncio.gather(*[handle(ev) for ev in events])
     return "OK"
 
-# ─── 事件處理 ─────────────────────────────────────────────
+
+# ---------- 事件分流 ---------------------------
 async def handle(event):
     try:
         if event.message.type == "text":
@@ -41,38 +50,55 @@ async def handle(event):
         elif event.message.type == "image":
             await handle_image(event)
     except ApiException as e:
-        print("[LINE]", e.status, e.body)
+        # e.status, e.body 會顯示 LINE API 回傳
+        print("[LINE-API]", e.status, e.body)
 
+
+# ---------- 文字 -------------------------------
 async def handle_text(event):
     msg = event.message.text.strip()
-    if (g := try_greet(msg)):
-        await reply_text(event.reply_token, g); return
-    info = await classify_and_lookup(text=msg)
-    await reply_text(event.reply_token,
-                     format_nutrition(info) if info else "找不到營養資料 QQ")
 
+    # 1) 關鍵字回覆
+    if (reply := try_reply(msg)):
+        await reply_text(event.reply_token, reply)
+        return
+
+    # 2) 查營養
+    info = await classify_and_lookup(text=msg)
+    text = format_nutrition(info) if info else "找不到營養資料 QQ"
+    await reply_text(event.reply_token, text)
+
+
+# ---------- 圖片 -------------------------------
 async def handle_image(event):
-    # 下載圖片
+    # 1. 下載原圖（注意，一定要加 Authorization）
     url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
     headers = {"Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN')}"}
-    async with httpx.AsyncClient(timeout=30) as c:
+
+    async with httpx.AsyncClient(timeout=60) as c:
         r = await c.get(url, headers=headers)
     if r.status_code != 200:
-        await reply_text(event.reply_token, "圖片下載失敗 QQ"); return
+        await reply_text(event.reply_token, "圖片下載失敗 QQ")
+        return
 
+    # 2. 暫存 → 辨識
     with tempfile.NamedTemporaryFile(delete=False) as fp:
-        fp.write(r.content); img_path = fp.name
+        fp.write(r.content)
+        tmp = fp.name
 
-    info = await classify_and_lookup(img_path=img_path)
-    await reply_text(event.reply_token,
-                     format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ")
+    info = await classify_and_lookup(img_path=tmp)
+    text = format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ"
+    await reply_text(event.reply_token, text)
 
+
+# ---------- 共用：送文字訊息 --------------------
 async def reply_text(token, text):
-    await api.reply_message(
-        ReplyMessageRequest(reply_token=token,
-                            messages=[TextMessage(text=text)])
+    await line_bot.reply_message(
+        ReplyMessageRequest(
+            reply_token=token,
+            messages=[TextMessage(text=text)]
+        )
     )
-
 
 #===================================================
 # # main.py
