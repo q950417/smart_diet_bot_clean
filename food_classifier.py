@@ -1,29 +1,24 @@
-# food_classifier.py -----------------------------------------------
-# 依文字或圖片，回傳 {"name", "calories", "protein", "fat", "carbs"} 或 None
+# food_classifier.py
+import os, asyncio, tempfile, httpx, pandas as pd, backoff
 
-import os, pathlib, mimetypes
-import pandas as pd, httpx, backoff, tempfile
-
-KEY  = os.getenv("SPOONACULAR_KEY", "")          # .env 內要放 SPOONACULAR_KEY
+# Spoonacular base url & key
 BASE = "https://api.spoonacular.com"
-CSV  = pathlib.Path(__file__).with_name("foods.csv")
+API_KEY = os.getenv("SPOONACULAR_KEY", "")
 
-# 確保 CSV 至少有表頭
-if not CSV.exists():
-    CSV.write_text("name,calories,protein,fat,carbs\n", encoding="utf-8")
+if not API_KEY:
+    raise RuntimeError(
+        "❌ 失敗：環境變數 SPOONACULAR_KEY 沒設定！\n"
+        "‣ 在 .env 寫：SPOONACULAR_KEY=xxxxxxxxxxxxxxxx\n"
+        "‣ Render Dashboard → Environment 也要加同名變數"
+    )
 
-_df = pd.read_csv(CSV)          # 快取在記憶體，方便查詢
-
-
-# ------------------- 工具 -------------------------
-
-@backoff.on_exception(backoff.expo,
-                      (httpx.HTTPStatusError, httpx.ReadTimeout),
-                      max_tries=3)
-async def _get(url: str, **params):
-    params["apiKey"] = KEY
-    async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get(url, params=params)
+# -------------- util ----------------
+@backoff.on_exception(backoff.expo, httpx.HTTPStatusError, max_tries=3)
+async def _get(path: str, **params) -> dict:
+    """對 spoonacular GET，若 402 代表配額用完，401 代表 key 無效/沒帶。"""
+    params["apiKey"] = API_KEY
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{BASE}{path}", params=params)
     r.raise_for_status()
     return r.json()
 

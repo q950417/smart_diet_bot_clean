@@ -1,23 +1,16 @@
-# chat.py ------------------------------------------------------------
-
-# 關鍵字 ➜ 回覆。要再加自訂，只要擴充這個 dict
-KEYWORD_REPLIES: dict[tuple[str, ...], str] = {
-    ("hi", "hello", "哈囉", "你好"): "嗨！想知道食物的營養嗎？傳文字或照片給我吧！",
-    ("午安",):                    "午安～ 午餐想吃什麼？",
-    ("bye", "掰掰", "再見"):       "掰掰！記得健康飲食喔 👋",
+# chat.py
+REPLIES = {
+    "hi":    "Hi there! 😀",
+    "hello": "Hello!",
+    "哈囉":  "嗨！想知道食物的營養嗎？傳文字或照片給我吧！",
+    "你好":  "你好～",
+    "幫助":  "➊ 傳文字查營養\n➋ 傳照片自動辨識\n➌ 輸入「哈囉」試試！"
 }
 
-def try_reply(text: str) -> str | None:
-    low = text.lower().strip()
-    for keys, reply in KEYWORD_REPLIES.items():
-        if low in keys:
-            return reply
-    return None
+def try_greet(text: str) -> str | None:
+    return REPLIES.get(text.lower())
 
-
-# ------------ 營養格式化與建議 --------------------------------------
-
-def _advice(kcal: int) -> str:
+def advice_by_calories(kcal: int) -> str:
     if kcal < 200:
         return "熱量很低，可以放心享用～"
     if kcal < 400:
@@ -25,12 +18,11 @@ def _advice(kcal: int) -> str:
     return "熱量偏高，建議搭配蔬菜或分次食用！"
 
 def format_nutrition(info: dict) -> str:
-    """把 API / CSV 取回的 dict 轉成人類可讀字串"""
     return (
         f"{info['name'].title()} 估算營養：\n"
         f"熱量 {info['calories']} kcal\n"
         f"蛋白質 {info['protein']} g | 脂肪 {info['fat']} g | 碳水 {info['carbs']} g\n"
-        f"{_advice(info['calories'])}"
+        f"{advice_by_calories(info['calories'])}"
     )
 
 #=========================================
