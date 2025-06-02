@@ -1,70 +1,161 @@
 # food_classifier.py
-import os, asyncio, pandas as pd, httpx, pathlib
+"""
+文字 → 先查本地 CSV；沒有就 hit Spoonacular guessNutrition
+圖片 → Spoonacular /food/images/analyze
+回傳統一的 dict：name / calories / protein / fat / carbs
+"""
+
+import pathlib, os, pandas as pd, httpx, asyncio, tempfile
 
 BASE = "https://api.spoonacular.com"
-CSV  = pathlib.Path(__file__).with_name("nutrition_db.csv")  # 你的離線資料表
-API_KEY = os.getenv("SPOONACULAR_KEY", "")
+KEY  = os.getenv("SPOONACULAR_KEY", "")          # ⚠️ 你必須在 Render ENV 加這個
 
-# ── 小工具 ───────────────────────────────────────────────
-async def _get_json(path: str, **params) -> dict | None:
-    """統一 GET；逾時或 4xx/5xx 都回 None"""
-    params["apiKey"] = API_KEY
-    url = f"{BASE}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:  # 把 timeout 拉長
-            r = await client.get(url, params=params)
-            r.raise_for_status()
-            return r.json()
-    except (httpx.HTTPError, httpx.TimeoutException) as e:
-        print("[Nutrition-API]", e)
-        return None
-
-# ── 文字→營養（只靠 API；失敗就 None）────────────────────
-async def _guess_nutrition(name: str) -> dict | None:
-    data = await _get_json("/recipes/guessNutrition", title=name)
-    if not data or "status" in data:      # API 回 'status': 'failure' 也算失敗
-        return None
-    return {
-        "name": name,
-        "calories": round(data["calories"]["value"]),
-        "protein":  round(data["protein"]["value"]),
-        "fat":      round(data["fat"]["value"]),
-        "carbs":    round(data["carbs"]["value"]),
-    }
-
-# ── 離線 CSV 快速查找 ─────────────────────────────────────
+# ---------- 本地 CSV ----------------------------------------------------------
+CSV = pathlib.Path(__file__).with_name("foods.csv")
 _df = pd.read_csv(CSV) if CSV.exists() else pd.DataFrame()
 
-def _lookup_local(name: str) -> dict | None:
-    row = _df.loc[_df["name"].str.lower() == name.lower()]
-    if row.empty:
+def _lookup_local(name: str):
+    if {"calories", "protein", "fat", "carbs"} <= set(_df.columns):
+        row = _df.loc[_df["name"].str.lower() == name.lower()]
+        if not row.empty:
+            r = row.iloc[0]
+            return dict(name=r["name"],
+                        calories=int(r["calories"]),
+                        protein=int(r["protein"]),
+                        fat=int(r["fat"]),
+                        carbs=int(r["carbs"]))
+    return None
+
+# ---------- 通用 HTTP ---------------------------------------------------------
+async def _get_json(url: str, **params):
+    params |= {"apiKey": KEY}
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.get(url, params=params)
+    r.raise_for_status()
+    return r.json()
+
+# ---------- 文字營養 ----------------------------------------------------------
+async def _guess_nutrition(name: str):
+    try:
+        j = await _get_json(f"{BASE}/recipes/guessNutrition", title=name)
+        return dict(
+            name      = name,
+            calories  = int(j["calories"]["value"]),
+            protein   = int(j["protein"]["value"]),
+            fat       = int(j["fat"]["value"]),
+            carbs     = int(j["carbs"]["value"]),
+        )
+    except Exception:
         return None
-    r = row.iloc[0]
-    return {
-        "name": r["name"],
-        "calories": int(r["calories"]),
-        "protein":  int(r["protein"]),
-        "fat":      int(r["fat"]),
-        "carbs":    int(r["carbs"]),
-    }
 
-# ── 對外主函式 ─────────────────────────────────────────────
-async def classify_and_lookup(*, text: str | None = None,
-                              img_path: str | None = None) -> dict | None:
-    """
-    - 文字：直接當做食物名稱去查
-    - 圖片：這裡簡化，之後可接入模型辨識；先回 None
-    """
-    name = text.strip() if text else None
-    if not name:
+# ---------- 圖片營養 ----------------------------------------------------------
+async def _guess_image_nutrition(img_path: str):
+    try:
+        params = {"apiKey": KEY}
+        with open(img_path, "rb") as f:
+            files = {"file": ("img.jpg", f, "image/jpeg")}
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.post(f"{BASE}/food/images/analyze",
+                                 params=params, files=files)
+        r.raise_for_status()
+        j = r.json()
+
+        # nutrients list → dict
+        nut = {n["name"]: n["amount"] for n in j["nutrition"]["nutrients"]}
+        name = j.get("category", {}).get("name") or "Unknown"
+
+        return dict(
+            name     = name,
+            calories = int(nut.get("Calories",   0)),
+            protein  = int(nut.get("Protein",    0)),
+            fat      = int(nut.get("Fat",        0)),
+            carbs    = int(nut.get("Carbohydrates", 0)),
+        )
+    except Exception:
         return None
 
-    # 1) 先用離線資料庫
-    if (info := _lookup_local(name)):
-        return info
+# ---------- 外部介面 ----------------------------------------------------------
+async def classify_and_lookup(text: str | None = None,
+                              img_path: str | None = None):
+    if text:
+        if (info := _lookup_local(text)):
+            return info
+        return await _guess_nutrition(text)
 
-    # 2) 再嘗試調 API（可能會逾時 / 額度不足）
-    return await _guess_nutrition(name)
+    if img_path:
+        return await _guess_image_nutrition(img_path)
+
+    return None
+
+
+#======================================
+# # food_classifier.py
+# import os, asyncio, pandas as pd, httpx, pathlib
+
+# BASE = "https://api.spoonacular.com"
+# CSV  = pathlib.Path(__file__).with_name("nutrition_db.csv")  # 你的離線資料表
+# API_KEY = os.getenv("SPOONACULAR_KEY", "")
+
+# # ── 小工具 ───────────────────────────────────────────────
+# async def _get_json(path: str, **params) -> dict | None:
+#     """統一 GET；逾時或 4xx/5xx 都回 None"""
+#     params["apiKey"] = API_KEY
+#     url = f"{BASE}{path}"
+#     try:
+#         async with httpx.AsyncClient(timeout=15) as client:  # 把 timeout 拉長
+#             r = await client.get(url, params=params)
+#             r.raise_for_status()
+#             return r.json()
+#     except (httpx.HTTPError, httpx.TimeoutException) as e:
+#         print("[Nutrition-API]", e)
+#         return None
+
+# # ── 文字→營養（只靠 API；失敗就 None）────────────────────
+# async def _guess_nutrition(name: str) -> dict | None:
+#     data = await _get_json("/recipes/guessNutrition", title=name)
+#     if not data or "status" in data:      # API 回 'status': 'failure' 也算失敗
+#         return None
+#     return {
+#         "name": name,
+#         "calories": round(data["calories"]["value"]),
+#         "protein":  round(data["protein"]["value"]),
+#         "fat":      round(data["fat"]["value"]),
+#         "carbs":    round(data["carbs"]["value"]),
+#     }
+
+# # ── 離線 CSV 快速查找 ─────────────────────────────────────
+# _df = pd.read_csv(CSV) if CSV.exists() else pd.DataFrame()
+
+# def _lookup_local(name: str) -> dict | None:
+#     row = _df.loc[_df["name"].str.lower() == name.lower()]
+#     if row.empty:
+#         return None
+#     r = row.iloc[0]
+#     return {
+#         "name": r["name"],
+#         "calories": int(r["calories"]),
+#         "protein":  int(r["protein"]),
+#         "fat":      int(r["fat"]),
+#         "carbs":    int(r["carbs"]),
+#     }
+
+# # ── 對外主函式 ─────────────────────────────────────────────
+# async def classify_and_lookup(*, text: str | None = None,
+#                               img_path: str | None = None) -> dict | None:
+#     """
+#     - 文字：直接當做食物名稱去查
+#     - 圖片：這裡簡化，之後可接入模型辨識；先回 None
+#     """
+#     name = text.strip() if text else None
+#     if not name:
+#         return None
+
+#     # 1) 先用離線資料庫
+#     if (info := _lookup_local(name)):
+#         return info
+
+#     # 2) 再嘗試調 API（可能會逾時 / 額度不足）
+#     return await _guess_nutrition(name)
 
 
 #=============================================
