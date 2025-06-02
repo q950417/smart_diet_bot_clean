@@ -173,7 +173,7 @@ async def classify_and_lookup(*, text: str | None = None,
     return await _guess_nutrition(name)
 
 
-=============================================
+#=============================================
 """
 純 Spoonacular 版本：
 * 文字：/recipes/guessNutrition?title=<food name>
