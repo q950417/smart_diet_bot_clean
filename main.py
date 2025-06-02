@@ -1,48 +1,45 @@
-# main.py -----------------------------------------------------------
 import os, asyncio, tempfile, httpx
 from fastapi import FastAPI, Request, HTTPException
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv ; load_dotenv()
 
+# ── LINE SDK ───────────────────────────────────────────────────────────────────
 from linebot.v3.messaging import (
     Configuration, AsyncApiClient, AsyncMessagingApi,
-    ReplyMessageRequest, TextMessage
+    ReplyMessageRequest, TextMessage,
 )
 from linebot.v3.messaging.exceptions import ApiException
 from linebot.v3.webhook import WebhookParser
 
+# ── 你自己的模組 ─────────────────────────────────────────────────────────────
 from food_classifier import classify_and_lookup
-from chat            import try_reply, format_nutrition
+from chat            import try_greet, format_nutrition
 
-
-# ---------- LINE 初始化 -----------------------
+# ── LINE 初始化 ──────────────────────────────────────────────────────────────
 parser = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
 conf   = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
-line_bot = AsyncMessagingApi(AsyncApiClient(configuration=conf))
+api    = AsyncMessagingApi(AsyncApiClient(configuration=conf))
 
+# ── FastAPI ──────────────────────────────────────────────────────────────────
 app = FastAPI()
 
-
-# ---------- 健康檢查 (Render) -------------------
 @app.get("/healthz")
-async def healthz():          # GET /healthz -> 200 OK
+async def healthz():
     return {"ok": True}
 
-
-# ---------- Webhook 入口 -----------------------
 @app.post("/callback")
-async def callback(request: Request):
-    body = await request.body()
-    sig  = request.headers.get("X-Line-Signature", "")
+async def callback(req: Request):
+    body      = await req.body()
+    signature = req.headers.get("X-Line-Signature", "")
     try:
-        events = parser.parse(body.decode(), sig)
+        events = parser.parse(body.decode(), signature)
     except Exception as e:
         raise HTTPException(400, str(e))
 
-    await asyncio.gather(*[handle(ev) for ev in events])
+    # 同步處理所有事件
+    await asyncio.gather(*[handle(e) for e in events])
     return "OK"
 
-
-# ---------- 事件分流 ---------------------------
+# ── 事件分派 ────────────────────────────────────────────────────────────────
 async def handle(event):
     try:
         if event.message.type == "text":
@@ -50,50 +47,49 @@ async def handle(event):
         elif event.message.type == "image":
             await handle_image(event)
     except ApiException as e:
-        # e.status, e.body 會顯示 LINE API 回傳
+        # 只簡單印出 LINE 平台回傳的錯誤
         print("[LINE-API]", e.status, e.body)
 
-
-# ---------- 文字 -------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 async def handle_text(event):
     msg = event.message.text.strip()
 
-    # 1) 關鍵字回覆
-    if (reply := try_reply(msg)):
-        await reply_text(event.reply_token, reply)
+    # 1) 先看是不是打招呼
+    greet = try_greet(msg)
+    if greet:
+        await reply_text(event.reply_token, greet)
         return
 
-    # 2) 查營養
+    # 2) 查文字 → 營養
     info = await classify_and_lookup(text=msg)
-    text = format_nutrition(info) if info else "找不到營養資料 QQ"
-    await reply_text(event.reply_token, text)
+    reply = format_nutrition(info) if info else "找不到營養資料 QQ"
+    await reply_text(event.reply_token, reply)
 
 
-# ---------- 圖片 -------------------------------
 async def handle_image(event):
-    # 1. 下載原圖（注意，一定要加 Authorization）
+    # 1) 從 LINE 下載原圖
     url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
     headers = {"Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN')}"}
 
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.get(url, headers=headers)
-    if r.status_code != 200:
+    async with httpx.AsyncClient(timeout=30) as c:
+        resp = await c.get(url, headers=headers)
+    if resp.status_code != 200:
         await reply_text(event.reply_token, "圖片下載失敗 QQ")
         return
 
-    # 2. 暫存 → 辨識
+    # 2) 存檔、辨識、查營養
     with tempfile.NamedTemporaryFile(delete=False) as fp:
-        fp.write(r.content)
-        tmp = fp.name
+        fp.write(resp.content)
+        img_path = fp.name
 
-    info = await classify_and_lookup(img_path=tmp)
-    text = format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ"
-    await reply_text(event.reply_token, text)
+    info = await classify_and_lookup(img_path=img_path)
+    reply = format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ"
+    await reply_text(event.reply_token, reply)
 
 
-# ---------- 共用：送文字訊息 --------------------
-async def reply_text(token, text):
-    await line_bot.reply_message(
+# ─────────────────────────────────────────────────────────────────────────────
+async def reply_text(token: str, text: str):
+    await api.reply_message(
         ReplyMessageRequest(
             reply_token=token,
             messages=[TextMessage(text=text)]
