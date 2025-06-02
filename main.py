@@ -1,23 +1,21 @@
-# main.py
 import os, asyncio, tempfile, httpx
 from fastapi import FastAPI, Request, HTTPException
 from dotenv import load_dotenv; load_dotenv()
 
-from linebot.v3.messaging             import (
+from linebot.v3.messaging import (
     Configuration, AsyncApiClient, AsyncMessagingApi,
     ReplyMessageRequest, TextMessage
 )
-from linebot.v3.messaging.exceptions  import ApiException
-from linebot.v3.webhook               import WebhookParser
+from linebot.v3.messaging.exceptions import ApiException
+from linebot.v3.webhook import WebhookParser
 
 from food_classifier import classify_and_lookup
-from chat            import try_reply, format_nutrition   # ← 這裡
+from chat import try_greet, format_nutrition
 
-# ── LINE init ───────────────────────────────────────────
-parser        = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
-conf          = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
-api_client    = AsyncApiClient(configuration=conf)
-line_bot      = AsyncMessagingApi(api_client)
+# ─── LINE init ───────────────────────────────────────────
+parser = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
+conf   = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
+api    = AsyncMessagingApi(AsyncApiClient(configuration=conf))
 
 app = FastAPI()
 
@@ -26,7 +24,7 @@ async def healthz(): return {"ok": True}
 
 @app.post("/callback")
 async def callback(request: Request):
-    body      = await request.body()
+    body = await request.body()
     signature = request.headers.get("X-Line-Signature", "")
     try:
         events = parser.parse(body.decode(), signature)
@@ -35,60 +33,139 @@ async def callback(request: Request):
     await asyncio.gather(*[handle(ev) for ev in events])
     return "OK"
 
-# ── 事件處理 ──────────────────────────────────────────────
+# ─── 事件處理 ─────────────────────────────────────────────
 async def handle(event):
     try:
         if event.message.type == "text":
             await handle_text(event)
         elif event.message.type == "image":
             await handle_image(event)
-        else:
-            # 其他訊息類型（貼圖、位置…）先忽略
-            pass
     except ApiException as e:
-        # e.status, e.body 皆可參考
-        print("[LINE-API]", e.status, e.body)
+        print("[LINE]", e.status, e.body)
 
 async def handle_text(event):
     msg = event.message.text.strip()
-    if (g := try_reply(msg)):                     # ← 這裡
-        await reply_text(event.reply_token, g)
-        return
-
+    if (g := try_greet(msg)):
+        await reply_text(event.reply_token, g); return
     info = await classify_and_lookup(text=msg)
-    await reply_text(
-        event.reply_token,
-        format_nutrition(info) if info else "找不到營養資料 QQ"
-    )
+    await reply_text(event.reply_token,
+                     format_nutrition(info) if info else "找不到營養資料 QQ")
 
 async def handle_image(event):
-    # 1) 透過 LINE 內容 API 下載原圖
-    url     = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
+    # 下載圖片
+    url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
     headers = {"Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN')}"}
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(url, headers=headers)
+    async with httpx.AsyncClient(timeout=30) as c:
+        r = await c.get(url, headers=headers)
     if r.status_code != 200:
-        await reply_text(event.reply_token, "圖片下載失敗 QQ")
-        return
+        await reply_text(event.reply_token, "圖片下載失敗 QQ"); return
 
-    # 2) 存到暫存檔後進行辨識
     with tempfile.NamedTemporaryFile(delete=False) as fp:
-        fp.write(r.content)
-        img_path = fp.name
+        fp.write(r.content); img_path = fp.name
 
     info = await classify_and_lookup(img_path=img_path)
-    await reply_text(
-        event.reply_token,
-        format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ"
-    )
+    await reply_text(event.reply_token,
+                     format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ")
 
 async def reply_text(token, text):
-    await line_bot.reply_message(
-        ReplyMessageRequest(
-            reply_token=token,
-            messages=[TextMessage(text=text)]
-        )
+    await api.reply_message(
+        ReplyMessageRequest(reply_token=token,
+                            messages=[TextMessage(text=text)])
     )
+
+
+#===================================================
+# # main.py
+# import os, asyncio, tempfile, httpx
+# from fastapi import FastAPI, Request, HTTPException
+# from dotenv import load_dotenv; load_dotenv()
+
+# from linebot.v3.messaging             import (
+#     Configuration, AsyncApiClient, AsyncMessagingApi,
+#     ReplyMessageRequest, TextMessage
+# )
+# from linebot.v3.messaging.exceptions  import ApiException
+# from linebot.v3.webhook               import WebhookParser
+
+# from food_classifier import classify_and_lookup
+# from chat            import try_reply, format_nutrition   # ← 這裡
+
+# # ── LINE init ───────────────────────────────────────────
+# parser        = WebhookParser(os.getenv("LINE_CHANNEL_SECRET", ""))
+# conf          = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""))
+# api_client    = AsyncApiClient(configuration=conf)
+# line_bot      = AsyncMessagingApi(api_client)
+
+# app = FastAPI()
+
+# @app.get("/healthz")
+# async def healthz(): return {"ok": True}
+
+# @app.post("/callback")
+# async def callback(request: Request):
+#     body      = await request.body()
+#     signature = request.headers.get("X-Line-Signature", "")
+#     try:
+#         events = parser.parse(body.decode(), signature)
+#     except Exception as e:
+#         raise HTTPException(400, str(e))
+#     await asyncio.gather(*[handle(ev) for ev in events])
+#     return "OK"
+
+# # ── 事件處理 ──────────────────────────────────────────────
+# async def handle(event):
+#     try:
+#         if event.message.type == "text":
+#             await handle_text(event)
+#         elif event.message.type == "image":
+#             await handle_image(event)
+#         else:
+#             # 其他訊息類型（貼圖、位置…）先忽略
+#             pass
+#     except ApiException as e:
+#         # e.status, e.body 皆可參考
+#         print("[LINE-API]", e.status, e.body)
+
+# async def handle_text(event):
+#     msg = event.message.text.strip()
+#     if (g := try_reply(msg)):                     # ← 這裡
+#         await reply_text(event.reply_token, g)
+#         return
+
+#     info = await classify_and_lookup(text=msg)
+#     await reply_text(
+#         event.reply_token,
+#         format_nutrition(info) if info else "找不到營養資料 QQ"
+#     )
+
+# async def handle_image(event):
+#     # 1) 透過 LINE 內容 API 下載原圖
+#     url     = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
+#     headers = {"Authorization": f"Bearer {os.getenv('LINE_CHANNEL_ACCESS_TOKEN')}"}
+#     async with httpx.AsyncClient(timeout=30) as client:
+#         r = await client.get(url, headers=headers)
+#     if r.status_code != 200:
+#         await reply_text(event.reply_token, "圖片下載失敗 QQ")
+#         return
+
+#     # 2) 存到暫存檔後進行辨識
+#     with tempfile.NamedTemporaryFile(delete=False) as fp:
+#         fp.write(r.content)
+#         img_path = fp.name
+
+#     info = await classify_and_lookup(img_path=img_path)
+#     await reply_text(
+#         event.reply_token,
+#         format_nutrition(info) if info else "這張圖認不出是什麼食物 QQ"
+#     )
+
+# async def reply_text(token, text):
+#     await line_bot.reply_message(
+#         ReplyMessageRequest(
+#             reply_token=token,
+#             messages=[TextMessage(text=text)]
+#         )
+#     )
 
 
 
