@@ -150,20 +150,36 @@ async def handle(event):
         print("[LINE-API]", e.status, e.body)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# async def handle_text(event):
+#     msg = event.message.text.strip()
+
+#     # 1) 先看是不是打招呼
+#     greet = try_greet(msg)
+#     if greet:
+#         await reply_text(event.reply_token, greet)
+#         return
+
+#     # 2) 查文字 → 營養
+#     info = await classify_and_lookup(text=msg)
+#     reply = format_nutrition(info) if info else "找不到營養資料 QQ"
+#     await reply_text(event.reply_token, reply)
 async def handle_text(event):
     msg = event.message.text.strip()
 
-    # 1) 先看是不是打招呼
-    greet = try_greet(msg)
-    if greet:
-        await reply_text(event.reply_token, greet)
+    # 1) 嘗試先用 TRIGGERS 快速回覆（打招呼、謝謝、早安等）
+    if reply := try_reply(msg):
+        await reply_text(event.reply_token, reply)
         return
 
-    # 2) 查文字 → 營養
+    # 2) 沒命中關鍵字才查營養
     info = await classify_and_lookup(text=msg)
-    reply = format_nutrition(info) if info else "找不到營養資料 QQ"
-    await reply_text(event.reply_token, reply)
 
+    if isinstance(info, dict) and "name" in info:
+        reply = format_nutrition(info)
+    else:
+        reply = "找不到營養資料 QQ"
+
+    await reply_text(event.reply_token, reply)
 
 async def handle_image(event):
     # 1) 從 LINE 下載原圖
